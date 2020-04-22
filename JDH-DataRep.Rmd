@@ -1,0 +1,367 @@
+---
+title: "Data Analysis Replication Assignment"
+author: "John Duncan Hurt"
+date: "April 21, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
+```
+#### ANT 388 (Applied Data Analysis) Spring 2020
+<br />
+
+### Article
+Fanta, vaclav; Jan Zouhar; Jaromir Benes; Jiri Bumerl; Petr Sklenicka <br />
+2020 &nbsp;&nbsp;&nbsp;	How old are the towns and villages in Central Europe? Archaeological data reveal the size of bias in dating obtained from traditional historical sources. <i>Journal of Archaeological Science</i> 113. <br />
+https://doi.org/10.1016/j.jas.2019.105044
+
+### Introduction
+  The starting point of this article is a discussion of issues related to the dating of settlements in Central Europe from the high medieval to early modern periods. In this context, the term 'time lag' refers to a phenomenon wherein historical dates for the foundation of such settlements tend to be later than the archaeologically determined dates. The authors state that the existence of the time lag phenomenon is "generally known in the archaeological community," but emphasize the need for further studies of a more quantitative nature (Fanta et al. 2020:2). This sets the stage for their case study, the results of which I have been able to partially replicate thanks to the completeness of their supplementary data.
+
+Their data comprises 527 settlements from the Czech Republic (although only 521 were used in any of the analyses -- more on this in Appendix 1). The original foundation of each settlement is associated with both a historically recorded date (e.g. 1436) and an archaeologically determined date interval (e.g. 1400-1500). To quantify the extent of difference between these two types of dates, the authors create two variables: 'time lag' and 'overlap.' Overlap is a binary variable, set to 1 when there is overlap between historical and archaeological dating, and set to 0 otherwise. Time lag is an interval representing the difference between the historical and archaeological dates. (Consult Appendix 1 if you want extra explanation of these and other variables.) First, they simply explore how overlap probability varies with archaeological date midpoint. They do so using scatterplots with smoothed trend lines; the results are seen in Figures 1A, 2A, and 3A. They use the same method to explore the relationship between the time lag variable and the archaeological date midpoint, seen in figures 1B, 2B, and 3B. They then use multiple logistic regression with overlap as the response variable and most of the rest of their variables (everything shown in table 3, plus the natural cubic spline of the archaeological date midpoint) as predictors. They produce two models, Model 1 and Model 2, with the only difference being that the latter includes distance to the nearest monastery as a predictor variable. Finally, they repeat this process, but this time with time lag as the response variable; thus they implement interval regression rather than logistic regression.
+
+The first thing I did was replicate their Table 2, which contains descriptive statistics and selected pairwise correlation coefficients for each of the variables used in their analyses. I then replicated their figures 1A, 2A, and 3A; showing how the overlap variable changes in response to changes in the archaeological date midpoint. I then replicated their Model 1 and reproduced the portion of Table 3 that shows coefficients from Model 1.
+
+ 
+
+
+
+### Preparing the Data
+##### In this section we create our dataset 'd', which will contain all the data used in the article. We then apply all necessary additions and transformations so that our data matches what was used in the publication's analyses.
+```{r message = FALSE}
+
+#loading packages
+library(tidyverse)
+library(splines)
+library(broom)
+
+
+#creating d0, which holds the original dataset, by reading the prepared csv. This is
+# just a .csv with data copied from the original .xlsx dataset, with simpler names.
+
+d0 <- read_csv("Data\\FantDataSIMPLE.csv")
+
+
+#creating 'd' and adding a column for the lower bound of the time lag interval
+
+d <- mutate(d0, LAG_MIN = pmax(HIST_DATE - ARCH_DATE_MAX, 0))
+
+
+#adding a column for the upper bound of the time lag interval
+
+d <- mutate(d, LAG_MAX = pmax(HIST_DATE - ARCH_DATE_MIN, 0))
+
+
+#adding a column for the overlap variable 'OVLAP', which is 1 when the historical date falls within the archaeological date interval, and 0 when not.
+
+for (i in 1:nrow(d))
+{
+  if (d[i, "LAG_MIN"] == 0) {d[i, "OVLAP"] <- 1}
+  else{d[i, "OVLAP"] <- 0}  
+}
+  
+
+#Filtering 'd' to only include the 521 cases that are actually used in the publication (see Appendix 1 if you are curious about why this was necessary)
+
+d <- filter(d, ARCH_DATE_MID <= 1600)
+
+
+#transforming certain variables to match what is done in the publication. They applied a 
+# log transformation to account for the skew of some variables. They converted the units 
+# of some variables from meters to 100km.
+
+d[, "DIST_MAJTOWN"] <- log(d[["DIST_MAJTOWN"]])
+d[, "TERR_UNDUL"] <- log(d[["TERR_UNDUL"]])
+d[, "DIST_MAJROAD"] <- log(d[["DIST_MAJROAD"]])
+
+d[, "DIST_MONAST"] <- d[["DIST_MONAST"]]/100000
+d[, "DIST_PRAGUE"] <- d[["DIST_PRAGUE"]]/100000
+d[, "DIST_MAJRIV"] <- d[["DIST_MAJRIV"]]/100000
+
+d[, "LAT"] <- d[["LAT"]]/100000
+d[, "LONG"] <- d[["LONG"]]/100000
+
+
+#I now create a new variable, LAND_FACTOR, which we will use as a variable in regression.
+# It has four levels of factors. The first level corresponds to the "8" category from 
+# LAND_TYPE_SIMP, which in the publication is used as the reference level. By placing 
+# '8' as the first level ('1') in our factors variable, I ensure that R will treat 
+# this category as the reference level. LAND_FACTOR takes the place of LAND_TYPE_SIMP
+# in the regression models (because creating it was simpler than forcing '8' to be
+# placed first in the levels if we were to simply convert LAND_TYPE_SIMP into factors).
+
+#the publication separates LAND_TYPE_SIMP into 4 categories, one of which is 4+5.
+# In the original data, 4 and 5 are distinct (there is no 4+5). So I assign both 4 
+# and 5 to the same factor, effectively replicating the category of 4+5 used in the 
+# publication's analyses.
+
+for (i in 1:nrow(d))
+{
+ if (d[i, "LAND_TYPE_SIMP"] == "8") {d[i, "LAND_FACTOR"] <- "1"}
+ else{
+ if (d[i, "LAND_TYPE_SIMP"] == "4") {d[i, "LAND_FACTOR"] <- "2"}
+ else{
+ if (d[i, "LAND_TYPE_SIMP"] == "5") {d[i, "LAND_FACTOR"] <- "2"}  
+ else{
+ if (d[i, "LAND_TYPE_SIMP"] == "6+7") {d[i, "LAND_FACTOR"] <- "3"}
+ else{
+ if (d[i, "LAND_TYPE_SIMP"] == "9+10+11") {d[i, "LAND_FACTOR"] <- "4"}  
+ }}}}
+}
+
+d[, "LAND_FACTOR"] <- factor(d[["LAND_FACTOR"]])
+
+
+# We now have our dataset, 'd'!
+
+head(d)
+
+```
+
+
+
+
+### Replicating Table 2
+```{r}
+
+#preparing to replicate table 2 by selecting/reordering our variables
+
+prep <- select(d, LAG_MIN, LAG_MAX, OVLAP, ARCH_DATE_MID, STATUS, DIST_MAJTOWN, TERR_UNDUL, ALA, DIST_MONAST, DIST_PRAGUE, DIST_MAJRIV, ALTITUDE, LAT, LONG, DIST_MAJROAD)
+
+
+#creating an empty dataframe called 'tab' to hold the values for our replicated table 2
+
+tab <- matrix(data = NA, nrow = 15, ncol = 9)
+tab <- as.data.frame(tab)
+colnames(tab) <- c("Variable","N", "Mean", "SD", "Min", "Max", "Cor1", "Cor2", "Cor3")
+
+
+#populating the values for our replicated table 2
+
+for (i in 1:15)
+{
+  tab[i, 1] <- colnames(prep[i])
+  tab[i, 2] <- length(prep[[i]][which(!is.na(prep[[i]]))])
+  tab[i, 3] <- round(mean(prep[[i]], na.rm = TRUE), 3)
+  tab[i, 4] <- round(sd(prep[[i]], na.rm = TRUE), 3)
+  tab[i, 5] <- round(min(prep[[i]], na.rm = TRUE), 3)
+  tab[i, 6] <- round(max(prep[[i]], na.rm = TRUE), 3)
+  tab[i, 7] <- round(cor(prep[[1]], prep[[i]], use = "complete.obs"), 3)
+  tab[i, 8] <- round(cor(prep[[2]], prep[[i]], use = "complete.obs"), 3)
+  tab[i, 9] <- round(cor(prep[[3]], prep[[i]], use = "complete.obs"), 3)
+}
+  
+#We have replicated Table 2! Note that every value matches exactly with the publication,
+# except for some of the values for the three variables that were log-transformed.
+# I have been unable to determine the cause of this discrepency, but it is minor overall.
+
+table2 <- tab
+rm(tab, prep)
+  table2
+```
+
+```{r echo = FALSE, out.width="100%"}
+knitr::include_graphics("img\\Table2.png")
+```
+
+
+### Replicating Table 3
+##### Table 1 from the article is shown below alongside Table 3, so that you can interpret the very unintuitive variable names at the bottom of my replicated table 3. If you want to see the figure text for Table 3, please consult the article.
+```{r}
+ 
+#replicating model 1, which is the multiple logistic regression from the publication
+# wherein OVLAP is the response variable and all variables named in table 3 (alongside
+# the natural cubic spline of ARCH_DATE_MID) are the predictor variables (only the 
+# DIST_MONAST variable is excluded).
+
+model1 <- glm(OVLAP ~ ns(d[["ARCH_DATE_MID"]], knots = 1250) + STATUS + DIST_MAJTOWN + TERR_UNDUL + ALA + DIST_PRAGUE + DIST_MAJRIV + LAT + LONG + DIST_MAJROAD + LAND_FACTOR, family = binomial, data = d)
+
+
+#obtaining exponentiated coefficients for each of the predictor variables in table 3.
+# These are stored in 'vals', which we will use to populate our table 3 dataframe.
+# I reorder our land type variables to match the order in the article's table 3,
+# ensuring that the names are changed accordingly. I then remove a few unwanted elements
+# from 'vals', and everything should now be ready.
+# Note that I am also adding a column for p values, which is not present in the article.
+# This is to allow us to check the p values with the article's table 3, which just shows
+# p value thresholds using asterisks.
+
+vals <- exp(coefficients(model1))
+valnames <- names(vals)
+pvals <- unname(unlist(tidy(model1)[, 5]))
+
+ass <- c(vals[14], vals[15], vals[13])
+ass2 <- c("6+7", "9+10+11", "4+5")
+ass3 <- c(pvals[14], pvals[15], pvals[13])
+
+vals[13:15] <- ass
+valnames[13:15] <- ass2
+pvals[13:15] <- ass3
+
+vals <- vals[4:15]
+valnames <- valnames[4:15]
+pvals <- pvals[4:15]
+
+tab <- matrix(nrow = length(vals), ncol = 3, dimnames = list(c(), c("Variable", "Exponentiated Coeff.", "p value")))
+tab <- as.data.frame(tab)
+tab[, 1] <- valnames
+tab[, 2] <- round(vals, 4)
+tab[, 3] <- round(pvals, 8)
+
+
+#We have now replicated the portion of Table 3 that shows results for Model 1. Note that
+# All of the values for our exponentiated coefficients match those seen in the article's
+# Table 3. There is one discrepency, however, with the p value shown for DIST_MAJTOWN.
+# In the article, they indicate (via '***') that the p value for the coefficient for
+# this variable is less than 0.001. However, our results place the p value at 0.00275.
+# Either our p value is different from theirs, or they reported theirs incorrectly.
+
+table3 <- tab
+rm(ass, ass2, ass3, vals, valnames, pvals, tab)
+  table3
+``` 
+
+```{r echo = FALSE, out.width="100%"}
+knitr::include_graphics("img\\Table1-3.png")
+```
+
+
+### Replicating Selected Figures
+##### This was largely a success, as our figures match theirs very closely. The most important difference is that our shaded areas show the standard error around the predicted values, while in the article the shaded area shows the 95% confidence interval around the predicted values. Thus, the two look quite different in that respect. Also note that, in Figure 3A, our legend is reversed from that in the publication. You can consult Appendix 1 if you are curious as to why this is the case. The forms of my lines match theirs, though minor discrepancies can be seen if one looks closely. The cause of these differences is unknown as of yet.
+<br />
+
+#### Replicating Figure 1A
+##### (the top figure is mine; the bottom one is from the article)
+```{r}
+
+#replicating figure 1A
+
+fig1A <- ggplot(d, aes(x=ARCH_DATE_MID, y=OVLAP)) + 
+
+ geom_jitter(size = 4, width = 7, height = 0.01, alpha = 1/5) +
+
+ xlim(843, 1607) +
+  
+ stat_smooth(color = "black", method="glm", se=TRUE, fullrange = FALSE, method.args =         list(family=binomial)) + 
+
+ labs(x = "Archaeological date midpoint", y = "Overlap Probability") + 
+
+ ggtitle("Figure 1A") 
+  
+fig1A
+```
+
+```{r echo = FALSE, out.width="70%"}
+knitr::include_graphics("img\\Fig1A.png")
+```
+
+
+#### Replicating Figure 2A
+##### (the top figure is mine; the bottom one is from the article)
+```{r} 
+#replicating figure 2A
+ 
+fig2A  <- ggplot(d, aes(x=ARCH_DATE_MID, y=OVLAP)) + 
+  
+ geom_jitter(size=4, width=7, height=0.01, alpha = 1/5, aes(color = factor(STATUS))) +
+  
+ xlim(843, 1607) +
+  
+ scale_color_manual(name = "Settlement\nStatus", labels = c("Village", "Town"), values =      c("forest green", "blue")) +
+  
+ stat_smooth(data = d[which(d[["STATUS"]] == 1), ], method="glm", se=TRUE, fullrange =        FALSE, method.args = list(family=binomial)) +
+  
+ stat_smooth(color = "forest green", data = d[which(d[["STATUS"]] == 0), ], method="glm",      se=TRUE, fullrange = FALSE, method.args = list(family=binomial)) +
+  
+ labs(x = "Archaeological date midpoint", y = "Overlap Probability") +
+  
+ ggtitle("Figure 2A") 
+
+fig2A
+```
+
+```{r echo = FALSE, out.width="60%"}
+knitr::include_graphics("img\\Fig2A.png")
+```
+
+```{r echo = FALSE, out.width="10%"}
+knitr::include_graphics("img\\Fig2Aleg.png")
+```
+
+#### Replicating Figure 3A
+##### (the top figure is mine; the bottom one is from the article)
+```{r} 
+#replicating Figure 3A
+# The new variable 'bico' will basically imitate the functionality of group_by(),
+# creating an index to separate cases for which DIST_MAJTOWN is 'small' or 'large'
+# (i.e. less than or greater than the median value of DIST_MAJTOWN). Using it will
+# make it simpler to separate our points by color, though it won't help with our lines.
+ 
+ for (i in 1:nrow(d))
+{
+  if (d[i, "DIST_MAJTOWN"] >= median(d[["DIST_MAJTOWN"]])) {d[i, "bico"] <- 1}
+  else{d[i, "bico"] <- 0}  
+}
+
+#Now, on to the actual figure!
+
+ fig3A  <- ggplot(d, aes(x=ARCH_DATE_MID, y=OVLAP)) + 
+    
+ geom_jitter(size=4, width=7, height=0.01, alpha = 1/5, aes(color = factor(bico))) +
+   
+ xlim(843, 1607) +
+ 
+ scale_color_manual(name = "Distance to\nNearest\nTown", labels = c("Small", "Large"),         values = c("blue", "forest green")) +
+
+ stat_smooth(color = "forest green", data = d[which(d[["DIST_MAJTOWN"]] >=                     median(d[["DIST_MAJTOWN"]])), ], method="glm", se=TRUE, fullrange = FALSE,               method.args = list(family=binomial)) +
+   
+ stat_smooth(data = d[which(d[["DIST_MAJTOWN"]] < median(d[["DIST_MAJTOWN"]])), ],             method="glm", se=TRUE, fullrange = FALSE, method.args = list(family=binomial)) +
+  
+ labs(x = "Archaeological date midpoint", y = "Overlap Probability") +
+
+ ggtitle("Figure 3A")
+
+d <- select(d, -bico)
+
+fig3A
+ 
+```
+ 
+```{r echo = FALSE, out.width="60%"}
+knitr::include_graphics("img\\Fig3A.png")
+```
+ 
+```{r echo = FALSE, out.width="10%"}
+knitr::include_graphics("img\\Fig3Aleg.png")
+```
+
+ 
+### Discussion
+I would say that, overall, this project was a success in that I was able to accurately replicate their descriptive statistics and data visualizations, as well as one of their logistic regression models. I encountered difficulties in a number of areas, and was unable to replicate all of the figures and models. I did not replicate Model 2 because, in including distance to the nearest monastery (the only variable in the dataset with NA values) as a predictor, this model involved an imputation procedure that would have been difficult to replicate. I do not replicate Models 3-4 or Figures 1B, 2B, 3B because these all use an interval (time lag) as the response variable. I felt that it was sufficient to replicate the logistic regression component of the article, leaving interval regression as a challenge for another time. What I did replicate seems to match quite closely with the results in the article, which was a satisfying outcome. Differences between my results and theirs are covered in the notes themselves throughout the Rmd document, rather than detailed here.
+
+I found a few quirks and discrepancies in the publication itself, and some of their procedures were not outlined in much clarity or detail. But their supplementary data was very complete, for which they ought to be given credit. I have my doubts about the usefulness of the interpolations they performed in QGIS, but I am leaving those figures alone given the scope of this project. Ultimately, the authors were able to identify at least two statistically significant predictors for the occurrence of overlap and/or time lag in the historical and archaeological dates for settlements in this region and timeframe. The implications of these findings in terms of any sort of causal relationship are, of course, unclear. But they have at least managed to quantify something archaeologists in their field already supposed, which is that discrepancies between historical and archaeological dating tend to grow in severity as the age of the settlement increases. They also revealed that there are other factors influencing such discrepancies, even though few of the geographic or environmental predictors in their models proved significant. But I digress!
+
+In summary, this exercise has demonstrated both the importance and the difficulty of creating work that is truly reproducible to the finest level of detail. I think one way to make progress in this area is for authors to do what we are learning to do here, which is to provide not only the data but also the code, in an intelligible format, as supplementary material to the publication.
+
+ 
+### Appendix 1
+#### (info you might not want to read but, that I couldn't stop myself from writing)
+
+        ------ explanations of variables and their [NAMES] in my dataset ------
+  Time lag [LAG_MIN, LAG_MAX] is simply the historical date [HIST_DATE] minus the archaeological date interval [ARCH_DATE_MIN, ARCH_DATE_MAX], with the caveat that negative results are replaced with 0. Because the archaeological date is an interval, time lag is also an interval. In practice (and as seen in the brackets above), these interval data are stored as two variables: one for the lower bound, and another for the upper bound. Again, the lower bound of the time lag variable is set to zero in cases where it would be negative. In R, this was done simply using the max() function with 0 as an argument. Archaeological date midpoint [ARCH_DATE_MID] is used in most of their analyses, and is simply the midpoint of the archaeological date interval. Overlap [OVLAP] is a binary variable, which is equal to 1 in cases where the historical date falls within the interval of the archaeological date. Thus, if the lower bound for time lag is 0, overlap is set to 1; otherwise it is set to 0.
+  
+  Most of the rest of the data reflect geographical/environmental conditions or distances between the settlements and other features of interest (such as major roads [DIST_MAJROAD], major rivers [DIST_MAJRIV], major towns [DIST_MAJTOWN], monasteries [DIST_MONAST], or the capital city [DIST_PRAGUE]). Table 1 in the publication shows the meaning of the values for landscape typology (simplified) [LAND_TYPE_SIMP], which is simply a condensed version of landscape typology [LAND_TYPE]. I create an additional variable called LAND_FACTOR where the categories from LAND_TYPE_SIMP are made into factors and reordered such that R will treat the '8' category as the reference level. This was my way of replicating the authors' implementation of LAND_TYPE_SIMP as a predictor variable in their regression models. Altitude [ALTITUDE], terrain undulation [TERR_UNDUL], longitude [LONG] and latitude [LAT] should be fairly self-explanatory.
+  
+  Settlement status [STATUS] refers to whether the settlement was classified as a town (variable is set to 1) or a village (variable is set to 0) by the year 1800. The supplementary data indicates that the ancient settlement area variable [ALA] is set to 1 when the area is within ALA, and 0 otherwise. The meaning of ALA is not explained either in the supplementary data or in the text of the article.
+  
+
+                 ------ A note on the total number of cases ------
+  The authors state in the abstract and on page 3 that their data comprises 527 settlements, with dates ranging from 850-1600 CE. In table 2 as well as figures 1-3, it is clear that the maximum value for archaeological date midpoint is indeed 1600. But in tables 2 and 3, it is clear that the total number of cases in their analyses was 521. In the data, we find 527 cases, six of which have archaeological date midpoints exceeding 1600. Thus, the authors must have excluded these six cases from their analyses, while neglecting to remove them from the dataset (and neglecting to change the total number of settlements from 527 to 521 in the text of the article). Anyways, I simply excluded those six cases to make my data match theirs.
+
+
+
+                 ------ A note on the colors in Figure 3A ------
+  In the legend for figure 3A, they say that the green line/points correspond to the 'small' values of DIST_MAJTOWN (which, they specify in the figure text, means the values that fall within the 1st and 2nd quartiles). Vice versa for blue. I coded my plot such that values of DIST_MAJTOWN that fall below the median are green, and those above it blue (this applies to both the points and the lines). The result is that my colors are swapped from those in the publication. I've looked at it over and over again, and I can only assume at this point that the publication mislabeled their legend for this figure. So, note that my graph colors match theirs, but our legends are backwards. 
+
+  
